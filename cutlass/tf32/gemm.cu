@@ -87,34 +87,33 @@ int run(int m, int n, int k) {
       problem_size.kn());  // <- Create matrix B with dimensions K x N
   cutlass::HostTensor<ElementOutput, LayoutOutput> tensor_c(
       problem_size.mn());  // <- Create matrix C with dimensions M x N
-  // cutlass::HostTensor<ElementOutput, LayoutOutput> tensor_ref_d(
-  //     problem_size.mn());  // <- Create matrix D with dimensions M x N used
-  //     to
-  // store output from reference kernel
+  cutlass::HostTensor<ElementOutput, LayoutOutput> tensor_ref_d(
+      problem_size.mn());  // <- Create matrix D with dimensions M x N used
+                           //     to
+                           // store output from reference kernel
   printf("Tensors initialized\n");
   // Fill input and output matrices on host using CUTLASS helper functions
   cutlass::reference::host::TensorFill(tensor_a.host_view());
   cutlass::reference::host::TensorFill(tensor_b.host_view());
   cutlass::reference::host::TensorFill(tensor_c.host_view());
-  // cutlass::reference::host::TensorFillRandomUniform(
-  //     tensor_a.host_view(), 1, ElementInputA(4), ElementInputA(-4),
-  //     0);  // <- Fill matrix A on host with uniform-distribution random data
-  // cutlass::reference::host::TensorFillRandomUniform(
-  //     tensor_b.host_view(), 1, ElementInputB(4), ElementInputB(-4),
-  //     0);  // <- Fill matrix B on host with uniform-distribution random data
-  // cutlass::reference::host::TensorFillRandomUniform(
-  //     tensor_c.host_view(), 1, ElementOutput(4), ElementOutput(-4),
-  //     0);  // <- Fill matrix C on host with uniform-distribution random data
-  // cutlass::reference::host::TensorFill(
-  //     tensor_ref_d
-  //         .host_view());  // <- fill matrix D for reference on host with
-  //         zeros
+  cutlass::reference::host::TensorFillRandomUniform(
+      tensor_a.host_view(), 1, ElementInputA(4), ElementInputA(-4),
+      0);  // <- Fill matrix A on host with uniform-distribution random data
+  cutlass::reference::host::TensorFillRandomUniform(
+      tensor_b.host_view(), 1, ElementInputB(4), ElementInputB(-4),
+      0);  // <- Fill matrix B on host with uniform-distribution random data
+  cutlass::reference::host::TensorFillRandomUniform(
+      tensor_c.host_view(), 1, ElementOutput(4), ElementOutput(-4),
+      0);  // <- Fill matrix C on host with uniform-distribution random data
+  cutlass::reference::host::TensorFill(
+      tensor_ref_d.host_view());  // <- fill matrix D for reference on host with
+                                  // zeros
   printf("Tensors filled\n");
   // Copy data from host to GPU
   tensor_a.sync_device();
   tensor_b.sync_device();
   tensor_c.sync_device();
-  // tensor_ref_d.sync_device();
+  tensor_ref_d.sync_device();
   printf("Data copied to device\n");
   // Initialize alpha and beta for dot product computation
   ElementComputeEpilogue alpha = ElementComputeEpilogue(1);
@@ -154,31 +153,30 @@ int run(int m, int n, int k) {
   CUTLASS_CHECK(status);
   printf("Launched\n");
   // Create instantiation for device reference gemm kernel
-  // cutlass::reference::device::Gemm<
-  //     ElementInputA, LayoutInputA, ElementInputB, LayoutInputB,
-  //     ElementOutput, LayoutOutput, ElementComputeEpilogue,
-  //     ElementComputeEpilogue> gemm_device;
+  cutlass::reference::device::Gemm<
+      ElementInputA, LayoutInputA, ElementInputB, LayoutInputB, ElementOutput,
+      LayoutOutput, ElementComputeEpilogue, ElementComputeEpilogue>
+      gemm_device;
 
-  // // Launch device reference gemm kernel
-  // gemm_device(problem_size, alpha, tensor_a.device_ref(),
-  // tensor_b.device_ref(),
-  //             beta, tensor_c.device_ref(), tensor_ref_d.device_ref());
+  // Launch device reference gemm kernel
+  gemm_device(problem_size, alpha, tensor_a.device_ref(), tensor_b.device_ref(),
+              beta, tensor_c.device_ref(), tensor_ref_d.device_ref());
 
   // Wait for kernels to finish
   cudaDeviceSynchronize();
 
   // Copy output data from CUTLASS and reference kernel to host for comparison
   tensor_c.sync_host();
-  // tensor_ref_d.sync_host();
+  tensor_ref_d.sync_host();
 
-  // // Check if output from CUTLASS kernel and reference kernel are equal or
-  // not bool passed = cutlass::reference::host::TensorEquals(
-  //     tensor_c.host_view(), tensor_ref_d.host_view());
+  // Check if output from CUTLASS kernel and reference kernel are equal or not
+  bool passed = cutlass::reference::host::TensorEquals(
+      tensor_c.host_view(), tensor_ref_d.host_view());
 
-  // std::cout << (passed ? "Passed" : "Failed") << std::endl;
+  std::cout << (passed ? "Passed" : "Failed") << std::endl;
 
-  // return (passed ? 0 : -1);
-  return tensor_c.host_ref().at({0, 0});
+  return (passed ? 0 : -1);
+  // return tensor_c.host_ref().at({0, 0});
 }
 
 int main(int argc, char *argv[]) {
