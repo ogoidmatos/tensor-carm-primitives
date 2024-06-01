@@ -8,5 +8,6 @@
 *./objs/
 *.ptx
 mma
+gemm
 *.csv
 .nfs*
