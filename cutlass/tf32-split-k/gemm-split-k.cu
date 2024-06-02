@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <iostream>
 
 #include "cutlass/cutlass.h"
@@ -138,9 +139,9 @@ int run(int m, int n, int k, int split_k_slices) {
   CUTLASS_CHECK(status);
   printf("Initialized\n");
   // Launch initialized CUTLASS kernel
+  auto start = std::chrono::high_resolution_clock::now();
   status = gemm_op();
   CUTLASS_CHECK(status);
-  printf("Launched\n");
   // Create instantiation for device reference gemm kernel
   // cutlass::reference::device::Gemm<
   //     ElementInputA, LayoutInputA, ElementInputB, LayoutInputB,
@@ -154,6 +155,11 @@ int run(int m, int n, int k, int split_k_slices) {
 
   // Wait for kernels to finish
   cudaDeviceSynchronize();
+  auto end = std::chrono::high_resolution_clock::now();
+  auto duration =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+  printf("Launched\n");
+  printf("Time taken: %lu ns\n", duration);
 
   // Copy output data from CUTLASS and reference kernel to host for comparison
   tensor_c.sync_host();

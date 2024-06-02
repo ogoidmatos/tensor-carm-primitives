@@ -61,7 +61,7 @@
 
 using data_type = float;
 
-int run(int m, int n, int k) {
+int run(int m, int n, int k, int tensor_core) {
   const int length_m = m;
   const int length_n = n;
   const int length_k = k;
@@ -83,8 +83,9 @@ int run(int m, int n, int k) {
   cublasHandle_t handle;
   CUBLAS_CHECK(cublasCreate(&handle));
 
-  // Set math mode to allow TF32 tensor core operations
-  CUBLAS_CHECK(cublasSetMathMode(handle, CUBLAS_TF32_TENSOR_OP_MATH));
+  if (tensor_core != 0)
+    // Set math mode to allow TF32 tensor core operations
+    CUBLAS_CHECK(cublasSetMathMode(handle, CUBLAS_TF32_TENSOR_OP_MATH));
 
   CUDA_CHECK(cudaMalloc((void **)&d_A, sizeof(data_type) * A.size()));
   CUDA_CHECK(cudaMalloc((void **)&d_B, sizeof(data_type) * B.size()));
@@ -118,13 +119,14 @@ int run(int m, int n, int k) {
 }
 
 int main(int argc, char *argv[]) {
-  int m = 4096;
-  int n = 4096;
-  int k = 4096;
+  int m = 1024;
+  int n = 1024;
+  int k = 1024;
+  int tensor_core = 1;
 
   int c;
   cudaSetDevice(0);
-  while ((c = getopt(argc, argv, "m:n:k:a:h")) != -1) switch (c) {
+  while ((c = getopt(argc, argv, "m:n:k:a:ch")) != -1) switch (c) {
       case 'a':
         m = n = k = atoi(optarg);
         break;
@@ -137,27 +139,30 @@ int main(int argc, char *argv[]) {
       case 'k':
         k = atoi(optarg);
         break;
+      case 'c':
+        tensor_core = 0;
+        break;
       case 'h':
         fprintf(stdout,
                 "Usage: %s [OPTION]...\n\n\t-m \t M dimension [int] "
-                "[default=4096]\n\t-n \t N "
-                "dimension [int] [default=4096]\n\t-k \t K dimension [int] "
-                "[default=4096]\n\t-a \t All "
-                "dimensions [int]\n\n",
+                "[default=1024]\n\t-n \t N "
+                "dimension [int] [default=1024]\n\t-k \t K dimension [int] "
+                "[default=1024]\n\t-a \t All "
+                "dimensions [int]\n\t-c Disable Tensor Cores\n\n",
                 argv[0]);
         exit(EXIT_SUCCESS);
       default:
         fprintf(stderr,
                 "Usage: %s [OPTION]...\n\n\t-m \t M dimension [int] "
-                "[default=4096]\n\t-n \t N "
-                "dimension [int] [default=4096]\n\t-k \t K dimension [int] "
-                "[default=4096]\n\t-a \t All "
-                "dimensions [int]\n\n",
+                "[default=1024]\n\t-n \t N "
+                "dimension [int] [default=1024]\n\t-k \t K dimension [int] "
+                "[default=1024]\n\t-a \t All "
+                "dimensions [int]\n\t-c Disable Tensor Cores\n\n",
                 argv[0]);
         exit(EXIT_FAILURE);
     }
 
   printf("GEMM with dimensions m=%d, n=%d, k=%d\n", m, n, k);
 
-  return run(m, n, k);
+  return run(m, n, k, tensor_core);
 }
