@@ -15,7 +15,7 @@ LOGS	   := logs
 OBJDIR=objs
 CXX=g++ -m64
 CXXFLAGS=-O3 -Wall
-LDFLAGS=-L/usr/local/cuda/lib64/ -lcudart
+LDFLAGS=-L/usr/local/cuda/lib64/ -lcudart -lnvidia-ml -pthread
 NVCC=nvcc
 NVCCFLAGS= -gencode=arch=compute_86,code=\"sm_86,compute_86\" -std=c++17 -I/home/diogomatos/PairHMM/cutlass-3.4.1/include -I/home/diogomatos/PairHMM/cutlass-3.4.1/tools/util/include
 

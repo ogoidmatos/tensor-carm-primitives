@@ -1,6 +1,6 @@
 EXECUTABLE := gemm
 
-CU_FILES   := gemm.cu
+CU_FILES   := gemm.cu ../../../nvml_tools.cu
 
 CU_DEPS    :=
 
@@ -15,7 +15,7 @@ LOGS	   := logs
 OBJDIR=objs
 CXX=g++ -m64
 CXXFLAGS=-O3 -Wall
-LDFLAGS=-L/usr/local/cuda/lib64/ -lcudart -lcublas
+LDFLAGS=-L/usr/local/cuda/lib64/ -lcudart -lcublas -lnvidia-ml
 NVCC=nvcc
 NVCCFLAGS= -gencode=arch=compute_86,code=\"sm_86,compute_86\" -std=c++11
 

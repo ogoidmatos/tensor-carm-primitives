@@ -6,6 +6,7 @@
 
 #include <iostream>
 
+#include "../../../tc-benchmark/nvml_tools.cu"
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/device/gemm.h"
 #include "cutlass/util/host_tensor.h"
@@ -15,6 +16,8 @@
 #include "cutlass/util/reference/host/tensor_fill.h"
 #include "cutlass/util/tensor_view_io.h"
 #include "helper.h"
+
+// #define POWER
 
 // The code section below describes datatype for input, output matrices and
 // computation between elements in input matrices.
@@ -41,9 +44,9 @@ using SmArch = cutlass::arch::Sm80;
 // This code section describes the tile size a thread block will compute
 using ShapeMMAThreadBlock = cutlass::gemm::GemmShape<128, 128, 32>;
 // This code section describes tile size a warp will compute
-using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 32>;
+using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 8>;
 // This code section describes the size of MMA op
-using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 8>;
+using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 4>;
 
 // This code section describes how threadblocks are scheduled on GPU
 using SwizzleThreadBlock =
@@ -73,6 +76,15 @@ using Gemm = cutlass::gemm::device::Gemm<
     ShapeMMAWarp, ShapeMMAOp, EpilogueOp, SwizzleThreadBlock, NumStages>;
 
 int run(int m, int n, int k) {
+  std::thread measuring_thread;
+  monitor_args thread_args;
+  thread_args.powerArray = std::vector<int>();
+  thread_args.clockArray = std::vector<int>();
+  thread_args.flag = 0;
+
+  init_nvml(&thread_args, &measuring_thread);
+  cudaDeviceSynchronize();
+
   const int length_m = m;
   const int length_n = n;
   const int length_k = k;
@@ -148,8 +160,17 @@ int run(int m, int n, int k) {
   status = gemm_op.initialize(arguments, workspace.get());
   CUTLASS_CHECK(status);
   printf("Initialized\n");
-  // Launch initialized CUTLASS kernel
-  status = gemm_op();
+  thread_args.flag = 1;
+#ifdef POWER
+#pragma unroll
+  for (int i = 0; i < 32768 * 64; i++)
+#endif
+    // Launch initialized CUTLASS kernel
+    status = gemm_op();
+  cudaDeviceSynchronize();
+  thread_args.flag = 0;
+  stop_nvml(&measuring_thread, thread_args.powerArray, thread_args.clockArray);
+
   CUTLASS_CHECK(status);
   printf("Launched\n");
   // Create instantiation for device reference gemm kernel

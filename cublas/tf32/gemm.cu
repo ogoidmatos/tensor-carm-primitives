@@ -57,11 +57,23 @@
 #include <iostream>
 #include <vector>
 
+#include "../../../tc-benchmark/nvml_tools.cu"
 #include "cublas_utils.h"
+
+// #define POWER
 
 using data_type = float;
 
 int run(int m, int n, int k, int tensor_core) {
+  std::thread measuring_thread;
+  monitor_args thread_args;
+  thread_args.powerArray = std::vector<int>();
+  thread_args.clockArray = std::vector<int>();
+  thread_args.flag = 0;
+
+  init_nvml(&thread_args, &measuring_thread);
+  CUDA_CHECK(cudaDeviceSynchronize());
+
   const int length_m = m;
   const int length_n = n;
   const int length_k = k;
@@ -95,12 +107,18 @@ int run(int m, int n, int k, int tensor_core) {
                         cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemcpy(d_B, B.data(), sizeof(data_type) * B.size(),
                         cudaMemcpyHostToDevice));
-
-  CUBLAS_CHECK(cublasSgemm(handle, transa, transb, length_m, length_n, length_k,
-                           &alpha, d_A, length_k, d_B, length_k, &beta, d_C,
-                           length_n));
+  thread_args.flag = 1;
+#ifdef POWER
+#pragma unroll
+  for (int i = 0; i < 32768 / 512; i++)
+#endif
+    CUBLAS_CHECK(cublasSgemm(handle, transa, transb, length_m, length_n,
+                             length_k, &alpha, d_A, length_k, d_B, length_k,
+                             &beta, d_C, length_n));
 
   CUDA_CHECK(cudaDeviceSynchronize());
+  thread_args.flag = 0;
+  stop_nvml(&measuring_thread, thread_args.powerArray, thread_args.clockArray);
 
   CUDA_CHECK(cudaMemcpy(C.data(), d_C, sizeof(data_type) * C.size(),
                         cudaMemcpyDeviceToHost));
@@ -148,7 +166,7 @@ int main(int argc, char *argv[]) {
                 "[default=1024]\n\t-n \t N "
                 "dimension [int] [default=1024]\n\t-k \t K dimension [int] "
                 "[default=1024]\n\t-a \t All "
-                "dimensions [int]\n\t-c Disable Tensor Cores\n\n",
+                "dimensions [int]\n\t-c \t Disable Tensor Cores\n\n",
                 argv[0]);
         exit(EXIT_SUCCESS);
       default:
@@ -157,7 +175,7 @@ int main(int argc, char *argv[]) {
                 "[default=1024]\n\t-n \t N "
                 "dimension [int] [default=1024]\n\t-k \t K dimension [int] "
                 "[default=1024]\n\t-a \t All "
-                "dimensions [int]\n\t-c Disable Tensor Cores\n\n",
+                "dimensions [int]\n\t-c \t Disable Tensor Cores\n\n",
                 argv[0]);
         exit(EXIT_FAILURE);
     }
