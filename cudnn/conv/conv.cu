@@ -32,7 +32,7 @@
 
 #include "../../../tc-benchmark/nvml_tools.cu"
 
-// #define POWER
+#define POWER
 
 enum Mode { FP32 = 1, FP16_32 = 2, TF32 = 4 };
 
@@ -74,25 +74,6 @@ inline void cudaAssert(cudaError_t code, const char *file, int line,
  */
 auto build_graph(int n, int c, int h, int w, int k, int r, int s, int padding,
                  int stride, int dilation, cudnnHandle_t handle, Mode mode) {
-  //   std::thread measuring_thread;
-  //   monitor_args thread_args;
-  //   thread_args.powerArray = std::vector<int>();
-  //   thread_args.clockArray = std::vector<int>();
-  //   thread_args.flag = 0;
-
-  //   init_nvml(&thread_args, &measuring_thread);
-  //   cudaCheckError(cudaDeviceSynchronize());
-
-  //   thread_args.flag = 1;
-  // #ifdef POWER
-  // #pragma unroll
-  //   for (int i = 0; i < 32768 / 512; i++)
-  // #endif
-
-  //   thread_args.flag = 0;
-  //   cudaCheckError(&measuring_thread, thread_args.powerArray,
-  //                  thread_args.clockArray);
-
   auto graph = std::make_shared<cudnn_frontend::graph::Graph>();
   if (mode & (FP32 | TF32)) {
     graph->set_io_data_type(cudnn_frontend::DataType_t::FLOAT)
@@ -154,6 +135,15 @@ int main(int argc, char *argv[]) {
   int stride = 1;
   int dilation = 1;
   Mode mode = FP32;
+
+  std::thread measuring_thread;
+  monitor_args thread_args;
+  thread_args.powerArray = std::vector<int>();
+  thread_args.clockArray = std::vector<int>();
+  thread_args.flag = 0;
+
+  init_nvml(&thread_args, &measuring_thread);
+  cudaCheckError(cudaDeviceSynchronize());
 
   // parse command line arguments, set args for conv
   int arg;
@@ -271,9 +261,19 @@ int main(int argc, char *argv[]) {
 
   std::cout << *graph << std::endl;
 
+  thread_args.flag = 1;
   auto status = graph->execute(handle, variant_pack, workspace_ptr);
 
+#ifdef POWER
+#pragma unroll
+  for (int i = 0; i < 16384; i++)
+    status = graph->execute(handle, variant_pack, workspace_ptr);
+#endif
+
   cudaCheckError(cudaDeviceSynchronize());
+  thread_args.flag = 0;
+  stop_nvml(&measuring_thread, thread_args.powerArray, thread_args.clockArray);
+
   std::cout << "Execution status: " << status.get_code() << ":"
             << status.get_message() << std::endl;
 

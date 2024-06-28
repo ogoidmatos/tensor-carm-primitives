@@ -33,7 +33,7 @@
 #include "../../../tc-benchmark/nvml_tools.cu"
 
 enum Mode { FP32 = 1, FP16_32 = 2, TF32 = 4 };
-enum Activation { RELU = 1, TANH = 2, SIGMOID = 4 };
+enum RESAMPLE { MAX = 1, AVG = 2 };
 
 #define POWER
 
@@ -67,8 +67,9 @@ inline void cudaAssert(cudaError_t code, const char *file, int line,
  * @return A tuple containing the constructed graph, input tensor, filter
  * tensor, and output tensor.
  */
-auto build_graph(int n, int c, int h, int w, int activation,
-                 cudnnHandle_t handle, Mode mode) {
+auto build_graph(int n, int c, int h, int w, RESAMPLE resample,
+                 cudnnHandle_t handle, int window, int stride, int pad,
+                 Mode mode) {
   auto graph = std::make_shared<cudnn_frontend::graph::Graph>();
   if (mode & (FP32 | TF32)) {
     graph->set_io_data_type(cudnn_frontend::DataType_t::FLOAT)
@@ -83,20 +84,27 @@ auto build_graph(int n, int c, int h, int w, int activation,
                                  .set_dim({n, c, h, w})
                                  .set_stride({c * h * w, 1, c * w, c}));
 
-  auto act_fn = cudnn_frontend::PointwiseMode_t::RELU_FWD;
+  auto res_fn = cudnn_frontend::ResampleMode_t::MAXPOOL;
+  auto pad_mode = cudnn_frontend::PaddingMode_t::NEG_INF_PAD;
 
-  if (activation & TANH) {
-    act_fn = cudnn_frontend::PointwiseMode_t::TANH_FWD;
-  } else if (activation & SIGMOID) {
-    act_fn = cudnn_frontend::PointwiseMode_t::SIGMOID_FWD;
+  if (resample & AVG) {
+    res_fn = cudnn_frontend::ResampleMode_t::AVGPOOL_INCLUDE_PADDING;
+    pad_mode = cudnn_frontend::PaddingMode_t::ZERO_PAD;
   }
 
-  auto relu_options =
-      cudnn_frontend::graph::Pointwise_attributes().set_mode(act_fn);
+  auto res_options = cudnn_frontend::graph::Resample_attributes()
+                         .set_is_inference(true)
+                         .set_resampling_mode(res_fn)
+                         .set_padding_mode(pad_mode)
+                         .set_window({window, window})
+                         .set_stride({stride, stride})
+                         .set_pre_padding({pad, pad})
+                         .set_post_padding({pad, pad});
 
-  auto Y = graph->pointwise(input, relu_options);
+  auto [Y, Index] = graph->resample(input, res_options);
 
   Y->set_output(true);
+  assert(Index == nullptr);
 
   graph->validate().is_good();
 
@@ -117,9 +125,12 @@ auto build_graph(int n, int c, int h, int w, int activation,
 int main(int argc, char *argv[]) {
   int n = 1;
   int c = 3;
-  int h = 1024;
-  int w = 1024;
-  Activation activation = RELU;
+  int h = 512;
+  int w = 512;
+  int window = 2;
+  int stride = 1;
+  int pad = 0;
+  RESAMPLE resample = MAX;
   Mode mode = FP32;
 
   std::thread measuring_thread;
@@ -136,7 +147,7 @@ int main(int argc, char *argv[]) {
   // parse command line arguments, set args for conv
   int arg;
   cudaSetDevice(0);
-  while ((arg = getopt(argc, argv, "n:c:h:w:strm:")) != -1) switch (arg) {
+  while ((arg = getopt(argc, argv, "n:c:h:w:f:s:p:MAm:")) != -1) switch (arg) {
       case 'n':
         n = atoi(optarg);
         break;
@@ -149,14 +160,20 @@ int main(int argc, char *argv[]) {
       case 'w':
         w = atoi(optarg);
         break;
+      case 'f':
+        window = atoi(optarg);
+        break;
       case 's':
-        activation = SIGMOID;
+        stride = atoi(optarg);
         break;
-      case 't':
-        activation = TANH;
+      case 'p':
+        pad = atoi(optarg);
         break;
-      case 'r':
-        activation = RELU;
+      case 'M':
+        resample = MAX;
+        break;
+      case 'A':
+        resample = AVG;
         break;
       case 'm':
         mode = static_cast<Mode>(atoi(optarg));
@@ -170,24 +187,35 @@ int main(int argc, char *argv[]) {
                 "Usage: %s [OPTION]...\n\n\t-n \t The batch size [int] "
                 "[default=1]\n\t-c \t The number of input channels [int] "
                 "[default=3]\n\t-h \t The height of the input tensor [int] "
-                "[default=1024]\n\t-w \t The width of the input tensor [int] "
-                "[default=1024]\n",
+                "[default=512]\n\t-w \t The width of the input tensor [int] "
+                "[default=512]\n\t-f \t The window size [int] "
+                "[default=3]\n\t-s \t The stride size [int] "
+                "[default=1]\n\t-p \t The padding size [int] "
+                "[default=0]\n\t-M \t Use MAXPOOL resampling [flag]\n\t-A \t "
+                "Use AVGPOOL resampling [flag]\n\t-m \t The mode [int] "
+                "[default=1]\n",
                 argv[0]);
         exit(EXIT_FAILURE);
     }
 
-  printf("Convolution with settings:\n");
+  printf("Resample with settings:\n");
   printf("Batch size: %d\n", n);
   printf("Input channels: %d\n", c);
   printf("Input height: %d\n", h);
   printf("Input width: %d\n", w);
-  if (activation & RELU)
-    printf("Activation: RELU\n");
-  else if (activation & TANH)
-    printf("Activation: TANH\n");
-  else if (activation & SIGMOID)
-    printf("Activation: SIGMOID\n");
+  printf("Window: %d\n", window);
+  printf("Stride: %d\n", stride);
+  printf("Padding: %d\n", pad);
+  if (resample & MAX)
+    printf("Resample: MAXPOOL\n");
+  else if (resample & AVG)
+    printf("Resample: AVGPOOL\n");
 
+  long elements_computed = std::floor((h - window + 2 * pad) / stride + 1) *
+                           std::floor((w - window + 2 * pad) / stride + 1) * c *
+                           n * window * window;
+
+  printf("Elements computed: %ld\n", elements_computed);
   // allocate memory for input, filter, and output tensors
   float *hostInput = (float *)calloc(n * c * h * w, sizeof(float));
   float *hostOutput = (float *)calloc(n * c * h * w, sizeof(float));
@@ -212,7 +240,8 @@ int main(int argc, char *argv[]) {
   cudnnHandle_t handle;
   cudnnCreate(&handle);
 
-  auto [graph, input, Y] = build_graph(n, c, h, w, activation, handle, mode);
+  auto [graph, input, Y] =
+      build_graph(n, c, h, w, resample, handle, window, stride, pad, mode);
 
   int8_t *workspace_ptr;
   cudaCheckError(
@@ -228,7 +257,7 @@ int main(int argc, char *argv[]) {
 
 #ifdef POWER
 #pragma unroll
-  for (int i = 0; i < 65536; i++)
+  for (int i = 0; i < 32768; i++)
     status = graph->execute(handle, variant_pack, workspace_ptr);
 #endif
 
@@ -236,6 +265,7 @@ int main(int argc, char *argv[]) {
   thread_args.flag = 0;
   stop_nvml(&measuring_thread, thread_args.powerArray, thread_args.clockArray);
 
+  cudaCheckError(cudaDeviceSynchronize());
   std::cout << "Execution status: " << status.get_code() << ":"
             << status.get_message() << std::endl;
 
@@ -244,8 +274,6 @@ int main(int argc, char *argv[]) {
                             cudaMemcpyDeviceToHost));
 
   printf("%f\n", hostOutput[0]);
-
-  std::cout << "Elements processed: " << n * c * h * w << std::endl;
 
   // free memory
   cudaCheckError(cudaFree(deviceInput));

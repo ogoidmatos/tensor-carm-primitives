@@ -33,9 +33,8 @@
 #include "../../../tc-benchmark/nvml_tools.cu"
 
 enum Mode { FP32 = 1, FP16_32 = 2, TF32 = 4 };
-enum Activation { RELU = 1, TANH = 2, SIGMOID = 4 };
 
-#define POWER
+// #define POWER
 
 #define DEBUG
 #ifdef DEBUG
@@ -67,8 +66,26 @@ inline void cudaAssert(cudaError_t code, const char *file, int line,
  * @return A tuple containing the constructed graph, input tensor, filter
  * tensor, and output tensor.
  */
-auto build_graph(int n, int c, int h, int w, int activation,
-                 cudnnHandle_t handle, Mode mode) {
+auto build_graph(int n, int c, cudnnHandle_t handle, Mode mode) {
+  //   std::thread measuring_thread;
+  //   monitor_args thread_args;
+  //   thread_args.powerArray = std::vector<int>();
+  //   thread_args.clockArray = std::vector<int>();
+  //   thread_args.flag = 0;
+
+  //   init_nvml(&thread_args, &measuring_thread);
+  //   cudaCheckError(cudaDeviceSynchronize());
+
+  //   thread_args.flag = 1;
+  // #ifdef POWER
+  // #pragma unroll
+  //   for (int i = 0; i < 32768 / 512; i++)
+  // #endif
+
+  //   thread_args.flag = 0;
+  //   cudaCheckError(&measuring_thread, thread_args.powerArray,
+  //                  thread_args.clockArray);
+
   auto graph = std::make_shared<cudnn_frontend::graph::Graph>();
   if (mode & (FP32 | TF32)) {
     graph->set_io_data_type(cudnn_frontend::DataType_t::FLOAT)
@@ -80,21 +97,34 @@ auto build_graph(int n, int c, int h, int w, int activation,
 
   auto input = graph->tensor(cudnn_frontend::graph::Tensor_attributes()
                                  .set_name("input")
-                                 .set_dim({n, c, h, w})
-                                 .set_stride({c * h * w, 1, c * w, c}));
+                                 .set_dim({n, c, 1})
+                                 .set_stride({n, 1, 1}));
 
-  auto act_fn = cudnn_frontend::PointwiseMode_t::RELU_FWD;
+  auto amax = graph->reduction(
+      input, cudnn_frontend::graph::Reduction_attributes().set_mode(
+                 cudnn_frontend::ReductionMode_t::AMAX));
 
-  if (activation & TANH) {
-    act_fn = cudnn_frontend::PointwiseMode_t::TANH_FWD;
-  } else if (activation & SIGMOID) {
-    act_fn = cudnn_frontend::PointwiseMode_t::SIGMOID_FWD;
-  }
+  amax->set_dim({n, 1, 1}).set_stride({1, 1, 1});
 
-  auto relu_options =
-      cudnn_frontend::graph::Pointwise_attributes().set_mode(act_fn);
+  auto asub =
+      graph->pointwise(input, amax,
+                       cudnn_frontend::graph::Pointwise_attributes().set_mode(
+                           cudnn_frontend::PointwiseMode_t::SUB));
 
-  auto Y = graph->pointwise(input, relu_options);
+  auto aexp = graph->pointwise(
+      asub, cudnn_frontend::graph::Pointwise_attributes().set_mode(
+                cudnn_frontend::PointwiseMode_t::EXP));
+
+  auto asum = graph->reduction(
+      aexp, cudnn_frontend::graph::Reduction_attributes().set_mode(
+                cudnn_frontend::ReductionMode_t::ADD));
+
+  asum->set_dim({n, 1, 1}).set_stride({1, 1, 1});
+
+  auto Y =
+      graph->pointwise(aexp, asum,
+                       cudnn_frontend::graph::Pointwise_attributes().set_mode(
+                           cudnn_frontend::PointwiseMode_t::DIV));
 
   Y->set_output(true);
 
@@ -116,47 +146,20 @@ auto build_graph(int n, int c, int h, int w, int activation,
 
 int main(int argc, char *argv[]) {
   int n = 1;
-  int c = 3;
-  int h = 1024;
-  int w = 1024;
-  Activation activation = RELU;
+  int c = 1024;
   Mode mode = FP32;
-
-  std::thread measuring_thread;
-  monitor_args thread_args;
-  thread_args.powerArray = std::vector<int>();
-  thread_args.clockArray = std::vector<int>();
-  thread_args.flag = 0;
-
-  init_nvml(&thread_args, &measuring_thread);
-  cudaCheckError(cudaDeviceSynchronize());
 
   srand(0);
 
   // parse command line arguments, set args for conv
   int arg;
   cudaSetDevice(0);
-  while ((arg = getopt(argc, argv, "n:c:h:w:strm:")) != -1) switch (arg) {
+  while ((arg = getopt(argc, argv, "n:c:m:")) != -1) switch (arg) {
       case 'n':
         n = atoi(optarg);
         break;
       case 'c':
         c = atoi(optarg);
-        break;
-      case 'h':
-        h = atoi(optarg);
-        break;
-      case 'w':
-        w = atoi(optarg);
-        break;
-      case 's':
-        activation = SIGMOID;
-        break;
-      case 't':
-        activation = TANH;
-        break;
-      case 'r':
-        activation = RELU;
         break;
       case 'm':
         mode = static_cast<Mode>(atoi(optarg));
@@ -179,40 +182,29 @@ int main(int argc, char *argv[]) {
   printf("Convolution with settings:\n");
   printf("Batch size: %d\n", n);
   printf("Input channels: %d\n", c);
-  printf("Input height: %d\n", h);
-  printf("Input width: %d\n", w);
-  if (activation & RELU)
-    printf("Activation: RELU\n");
-  else if (activation & TANH)
-    printf("Activation: TANH\n");
-  else if (activation & SIGMOID)
-    printf("Activation: SIGMOID\n");
 
   // allocate memory for input, filter, and output tensors
-  float *hostInput = (float *)calloc(n * c * h * w, sizeof(float));
-  float *hostOutput = (float *)calloc(n * c * h * w, sizeof(float));
+  float *hostInput = (float *)calloc(n * c, sizeof(float));
+  float *hostOutput = (float *)calloc(n * c, sizeof(float));
 
-  for (int i = 0; i < n * c * h * w; i++) {
+  for (int i = 0; i < n * c; i++) {
     hostInput[i] = ((float)rand() / (float)RAND_MAX) * 2 - 1;
   }
 
   // allocate memory for input, filter, and output tensors on device
   float *deviceInput, *deviceOutput;
-  cudaCheckError(
-      cudaMalloc((void **)&deviceInput, n * c * h * w * sizeof(float)));
-  cudaCheckError(
-      cudaMalloc((void **)&deviceOutput, n * c * h * w * sizeof(float)));
+  cudaCheckError(cudaMalloc((void **)&deviceInput, n * c * sizeof(float)));
+  cudaCheckError(cudaMalloc((void **)&deviceOutput, n * c * sizeof(float)));
 
   // copy input and filter tensors to device
-  cudaCheckError(cudaMemcpy(deviceInput, hostInput,
-                            n * c * h * w * sizeof(float),
+  cudaCheckError(cudaMemcpy(deviceInput, hostInput, n * c * sizeof(float),
                             cudaMemcpyHostToDevice));
   cudaCheckError(cudaDeviceSynchronize());
 
   cudnnHandle_t handle;
   cudnnCreate(&handle);
 
-  auto [graph, input, Y] = build_graph(n, c, h, w, activation, handle, mode);
+  auto [graph, input, Y] = build_graph(n, c, handle, mode);
 
   int8_t *workspace_ptr;
   cudaCheckError(
@@ -223,29 +215,19 @@ int main(int argc, char *argv[]) {
       variant_pack = {{input, deviceInput}, {Y, deviceOutput}};
 
   std::cout << *graph << std::endl;
-  thread_args.flag = 1;
+
   auto status = graph->execute(handle, variant_pack, workspace_ptr);
 
-#ifdef POWER
-#pragma unroll
-  for (int i = 0; i < 65536; i++)
-    status = graph->execute(handle, variant_pack, workspace_ptr);
-#endif
-
   cudaCheckError(cudaDeviceSynchronize());
-  thread_args.flag = 0;
-  stop_nvml(&measuring_thread, thread_args.powerArray, thread_args.clockArray);
-
   std::cout << "Execution status: " << status.get_code() << ":"
             << status.get_message() << std::endl;
 
-  cudaCheckError(cudaMemcpy(hostOutput, deviceOutput,
-                            n * c * h * w * sizeof(float),
+  cudaCheckError(cudaMemcpy(hostOutput, deviceOutput, n * c * sizeof(float),
                             cudaMemcpyDeviceToHost));
 
   printf("%f\n", hostOutput[0]);
 
-  std::cout << "Elements processed: " << n * c * h * w << std::endl;
+  std::cout << "Elements processed: " << n * c << std::endl;
 
   // free memory
   cudaCheckError(cudaFree(deviceInput));
